@@ -1,0 +1,8 @@
+msal==1.24.0b2
+azure-cli==2.55.0
+azure_storage==0.36.0
+colorama==0.4.6
+javaobj-py3==0.4.0
+pefile==2023.2.7
+pycryptodome==3.19.1
+Requests==2.31.0

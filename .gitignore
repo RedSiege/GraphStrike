@@ -1,0 +1,6 @@
+*.bin
+__pycache__/
+*.py[cod]
+virtual/
+config.py
+config.h

