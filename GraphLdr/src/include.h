@@ -197,9 +197,6 @@ extern PVOID     Spoof( PVOID, PVOID, PVOID, PVOID, PPRM, PVOID, PVOID, PVOID, P
 #define H_API_HEAPALLOC                             0xadc4062e
 #define H_API_SLEEP                                 0xe07cd7e
 #define H_API_WAITFORSINGLEOBJECTEX                 0x512e1b97
-#define H_API_FINDATOMA                             0x428e1578
-#define H_API_ADDATOMA                              0x8e48e800
-#define H_API_DELETEATOM                            0x59fb7829
 #define H_API_GETLASTERROR                          0x8160bdc3
 #define H_API_SETLASTERROR                          0xccc91e4f
 #define H_API_QUERYPERFORMANCECOUNTER               0x7524528d
